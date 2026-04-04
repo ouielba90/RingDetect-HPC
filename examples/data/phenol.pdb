@@ -1,0 +1,10 @@
+HEADER    PHENOL TEST
+REMARK    Testing strict column parsing
+ATOM      1  C1  PHN A   1       0.000   1.397   0.000  1.00  0.00           C  
+ATOM      2  C2  PHN A   1       1.210   0.698   0.000  1.00  0.00           C  
+ATOM      3  C3  PHN A   1       1.210  -0.698   0.000  1.00  0.00           C  
+ATOM      4  C4  PHN A   1       0.000  -1.397   0.000  1.00  0.00           C  
+ATOM      5  C5  PHN A   1      -1.210  -0.698   0.000  1.00  0.00           C  
+ATOM      6  C6  PHN A   1      -1.210   0.698   0.000  1.00  0.00           C  
+HETATM    7  O1  PHN A   1       0.000   2.750   0.000  1.00  0.00           O  
+END

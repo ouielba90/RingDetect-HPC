@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=42", "wheel", "numpy"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ringdetect-hpc"
+version = "1.0.0"
+description = "A blisteringly fast Fortran engine for molecular cycle perception."
+readme = "README.md"
+requires-python = ">=3.7"
+license = {text = "MIT"}
+authors = [
+  {name = "ouielba90"}
+]
+dependencies = [
+    "numpy",
+]
+
+[project.urls]
+Homepage = "https://github.com/ouielba90/RingDetect-HPC"

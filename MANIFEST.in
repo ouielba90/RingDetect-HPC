@@ -1,0 +1,5 @@
+include src/*.f90
+include src/*.c
+include Makefile
+recursive-include examples/data *.xyz *.csv *.mol *.pdb
+recursive-include ringdetect *.so *.dylib *.dll

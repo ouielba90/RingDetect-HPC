@@ -1,0 +1,99 @@
+name: Build and Publish to PyPI
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build_wheels:
+    name: Build wheels (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install gfortran (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -eux
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+          # Install GNU Compiler Collection
+          brew install gcc || brew upgrade gcc
+
+          # Locate versioned gfortran binary provided by Homebrew
+          GFORTRAN_VERSIONED=$(ls /opt/homebrew/bin/gfortran-* /usr/local/bin/gfortran-* 2>/dev/null | head -n 1)
+          if [ -z "$GFORTRAN_VERSIONED" ]; then
+            GFORTRAN_VERSIONED=$(command -v gfortran || true)
+          fi
+          if [ -z "$GFORTRAN_VERSIONED" ]; then
+            echo "Error: gfortran not found."
+            exit 1
+          fi
+
+          # Create a system-wide symlink for cibuildwheel
+          sudo ln -sf "$GFORTRAN_VERSIONED" /usr/local/bin/gfortran
+          gfortran --version
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v2.21.3
+        env:
+          CIBW_BUILD_FRONTEND: build
+          
+          # Target modern macOS to satisfy Homebrew library dependencies
+          MACOSX_DEPLOYMENT_TARGET: "15.0"
+
+          # Install native dependencies for Linux runners
+          CIBW_BEFORE_ALL_LINUX: |
+            if command -v yum >/dev/null; then
+              yum install -y gcc-gfortran libgomp
+            elif command -v dnf >/dev/null; then
+              dnf install -y gcc-gfortran libgomp
+            elif command -v apk >/dev/null; then
+              apk add --no-cache gfortran libgomp
+            fi
+
+          # Compile the shared Fortran library before building the Python wheel
+          CIBW_BEFORE_BUILD: |
+            set -eux
+            mkdir -p {project}/ringdetect
+            gfortran \
+              -shared -fPIC -O3 -fopenmp \
+              -ffree-line-length-none \
+              {project}/src/ring_engine.f90 \
+              -o {project}/ringdetect/libringengine.so
+
+          # Skip unsupported or 32-bit architectures
+          CIBW_SKIP: "pp* *-manylinux_i686 *-musllinux*"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cibw-wheels-${{ matrix.os }}-${{ strategy.job-index }}
+          path: wheelhouse/*.whl
+
+  upload_pypi:
+    name: Upload to PyPI
+    needs: build_wheels
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for PyPI Trusted Publishing
+      contents: read
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cibw-wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@v1.12.4
+        with:
+          verbose: true
