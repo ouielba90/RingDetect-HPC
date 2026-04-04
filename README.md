@@ -1,6 +1,6 @@
 # RingDetect-HPC
 
-[![PyPI version](https://badge.fury.io/py/ringdetect.svg)](https://pypi.org/project/ringdetect-hpc/)
+[![PyPI version](https://badge.fury.io/py/ringdetect-hpc.svg)](https://pypi.org/project/ringdetect-hpc/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A blisteringly fast command-line utility and Python library for detecting specific molecular rings (cycles) from various structural coordinate files (XYZ, PDB, MOL, CSV) and Python objects (ASE, RDKit). 
