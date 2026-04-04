@@ -7,7 +7,7 @@ YELLOW='\033[0;33m'
 NC='\033[0m' # No Color
 
 # Clean up trap: Ensures artifacts are deleted even if a test fails and exits
-trap 'rm -f *.rings *.json temp_test.raw temp_test.idx' EXIT
+trap 'rm -f *.rings *.json temp_test.raw temp_test.idx temp_exotic.raw' EXIT
 
 echo "======================================================"
 echo -e " ${YELLOW}🚀 Starting RingDetect-HPC Integration Test Suite${NC}"
@@ -88,7 +88,7 @@ else
 fi
 
 # --- STEP 4: Error Handling & Edge Cases ---
-echo -e "\n[4/5] Testing Error Handling & Edge Cases..."
+echo -e "\n[4/5] Testing Error Handling & Universal Table..."
 
 # Test 8: Missing File Handling (Should fail gracefully, not segfault)
 if ./ring_detector non_existent_ghost_file.xyz > /dev/null 2>&1; then
@@ -103,6 +103,16 @@ if [ $? -eq 0 ]; then
     echo -e "${GREEN}  ✓ Extreme max_ring (-m 5000) capped safely without crashing.${NC}"
 else
     echo -e "${RED}  ✗ Extreme max_ring caused a crash.${NC}"; exit 1
+fi
+
+# Test 10: Universal Periodic Table & Case Insensitivity (C-Parser)
+# Creates a temporary file with a 3-MR made of Bismuth, Uranium, and Palladium with messy casing
+echo -e "bI 0.0 0.0 0.0\nu 1.5 0.0 0.0\npD 0.0 1.5 0.0" > temp_exotic.raw
+./ring_detector temp_exotic.raw -f raw -m 3 > /dev/null
+if grep -q "3-MR" temp_exotic.rings; then
+    echo -e "${GREEN}  ✓ Universal Periodic Table & C-Parser case-insensitivity passed.${NC}"
+else
+    echo -e "${RED}  ✗ Universal Periodic Table failed in C-Parser.${NC}"; exit 1
 fi
 
 # --- STEP 5: Python API Tests ---
@@ -135,6 +145,17 @@ try:
     empty_rings = find_rings([], [], [], [])
     assert len(empty_rings) == 0, "Expected 0 rings for empty input"
     print("\033[0;32m  ✓ Python API gracefully handled empty molecules without crashing C-backend.\033[0m")
+
+    # --- Robustness Test 3: Universal Table & Case Insensitivity (Python) ---
+    # Create a heavy metal 3-MR with extra spaces and mixed case
+    x_exo = [0.0, 1.5, 0.0]
+    y_exo = [0.0, 0.0, 1.5]
+    z_exo = [0.0, 0.0, 0.0]
+    elem_exo = [" bI ", "u", "pD"] 
+    
+    exo_rings = find_rings(x_exo, y_exo, z_exo, elem_exo, max_ring=3)
+    assert len(exo_rings) == 1, "Expected heavy metal ring to be detected"
+    print("\033[0;32m  ✓ Python API correctly processed exotic elements and messy casing.\033[0m")
 
 except Exception as e:
     print(f"\033[0;31m  ✗ Python API test failed: {e}\033[0m")
