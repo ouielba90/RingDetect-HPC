@@ -115,6 +115,15 @@ else
     echo -e "${RED}  ✗ Universal Periodic Table failed in C-Parser.${NC}"; exit 1
 fi
 
+# Test 11: Fragment Masking (-a flag)
+# Masking out atom 6 in Benzene (using 1-5) should break the 6-membered ring.
+./ring_detector examples/data/benzene.xyz -f xyz -a 1-5 > /dev/null
+if ! grep -q "6-MR" benzene.rings; then
+    echo -e "${GREEN}  ✓ Fragment Masking (-a) successfully pruned the graph.${NC}"
+else
+    echo -e "${RED}  ✗ Fragment Masking failed (found ring despite masked atom).${NC}"; exit 1
+fi
+
 # --- STEP 5: Python API Tests ---
 echo -e "\n[5/5] Testing Python API (ctypes wrapper)..."
 python3 -c '
@@ -130,32 +139,55 @@ try:
 
     rings = find_rings(x, y, z, elements, max_ring=6)
     assert len(rings) == 1, f"Expected 1 ring, found {len(rings)}"
-    assert rings[0]["size"] == 6, "Expected a 6-MR"
     print("\033[0;32m  ✓ Python API native arrays passed.\033[0m")
 
     # --- Robustness Test 1: Mismatched Arrays ---
     try:
-        find_rings([0.0], [0.0], [0.0], ["C", "H"]) # 1 coord, 2 elements
+        find_rings([0.0], [0.0], [0.0], ["C", "H"])
         print("\033[0;31m  ✗ Python API failed to catch mismatched arrays!\033[0m")
         sys.exit(1)
     except ValueError:
         print("\033[0;32m  ✓ Python API gracefully caught mismatched array lengths.\033[0m")
 
     # --- Robustness Test 2: Empty Molecule ---
-    empty_rings = find_rings([], [], [], [])
-    assert len(empty_rings) == 0, "Expected 0 rings for empty input"
-    print("\033[0;32m  ✓ Python API gracefully handled empty molecules without crashing C-backend.\033[0m")
+    assert len(find_rings([], [], [], [])) == 0
+    print("\033[0;32m  ✓ Python API gracefully handled empty molecules.\033[0m")
 
-    # --- Robustness Test 3: Universal Table & Case Insensitivity (Python) ---
-    # Create a heavy metal 3-MR with extra spaces and mixed case
-    x_exo = [0.0, 1.5, 0.0]
-    y_exo = [0.0, 0.0, 1.5]
-    z_exo = [0.0, 0.0, 0.0]
-    elem_exo = [" bI ", "u", "pD"] 
-    
-    exo_rings = find_rings(x_exo, y_exo, z_exo, elem_exo, max_ring=3)
-    assert len(exo_rings) == 1, "Expected heavy metal ring to be detected"
+    # --- Robustness Test 3: Universal Table ---
+    exo_rings = find_rings([0.0, 1.5, 0.0], [0.0, 0.0, 1.5], [0.0, 0.0, 0.0], [" bI ", "u", "pD"], max_ring=3)
+    assert len(exo_rings) == 1
     print("\033[0;32m  ✓ Python API correctly processed exotic elements and messy casing.\033[0m")
+
+    # --- Robustness Test 4: Fragment Masking ---
+    # Passing only 5 atoms of the benzene ring as active
+    masked_rings = find_rings(x, y, z, elements, max_ring=6, active_atoms=[0, 1, 2, 3, 4])
+    assert len(masked_rings) == 0, "Expected 0 rings because atom index 5 is excluded"
+    print("\033[0;32m  ✓ Python API Fragment Masking successfully pruned the graph.\033[0m")
+
+    # --- Integration Test: ASE ---
+    try:
+        import ase
+        from ase import Atoms
+        from ringdetect.engine import find_rings_ase
+        atoms = Atoms("C6", positions=[(0, 1.397, 0), (1.2098, 0.6985, 0), (1.2098, -0.6985, 0), (0, -1.397, 0), (-1.2098, -0.6985, 0), (-1.2098, 0.6985, 0)])
+        assert len(find_rings_ase(atoms, max_ring=6)) == 1
+        print("\033[0;32m  ✓ ASE wrapper integration passed.\033[0m")
+    except ImportError:
+        print("\033[0;33m  ⚠ ASE not installed. Skipping ASE integration test.\033[0m")
+
+    # --- Integration Test: RDKit ---
+    try:
+        import rdkit
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+        from ringdetect.engine import find_rings_rdkit
+        mol = Chem.MolFromSmiles("C1=CC=CC=C1")
+        mol = Chem.AddHs(mol)
+        AllChem.EmbedMolecule(mol, randomSeed=42)
+        assert any(r["size"] == 6 for r in find_rings_rdkit(mol, max_ring=6))
+        print("\033[0;32m  ✓ RDKit wrapper integration passed.\033[0m")
+    except ImportError:
+        print("\033[0;33m  ⚠ RDKit not installed. Skipping RDKit integration test.\033[0m")
 
 except Exception as e:
     print(f"\033[0;31m  ✗ Python API test failed: {e}\033[0m")

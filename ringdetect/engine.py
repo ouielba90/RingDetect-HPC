@@ -20,7 +20,8 @@ _lib.find_rings.argtypes = [
     ctypes.POINTER(ctypes.c_int),       # threads
     ctypes.POINTER(ctypes.c_int),       # target_rings
     ctypes.c_char_p,                    # out_filename
-    ctypes.POINTER(ctypes.c_double)     # cell (NEW: Periodic Boundaries)
+    ctypes.POINTER(ctypes.c_double),    # cell 
+    ctypes.POINTER(ctypes.c_int)        # active_mask
 ]
 _lib.find_rings.restype = None
 
@@ -48,7 +49,7 @@ def _get_covalent_radius(element):
     clean_elem = str(element).strip().upper()
     return radii.get(clean_elem, 1.00)
 
-def find_rings(x, y, z, elements, max_ring=6, cell=None):
+def find_rings(x, y, z, elements, max_ring=6, cell=None, active_atoms=None):
     """
     Python API for the RingDetect HPC Engine.
     """
@@ -66,27 +67,35 @@ def find_rings(x, y, z, elements, max_ring=6, cell=None):
     c_radii = (ctypes.c_double * n_atoms)(*radii)
     
     c_max_ring = ctypes.c_int(max_ring)
-    c_sep = ctypes.c_char(b',')  # Critical: Pass as byte char
-    c_threads = ctypes.c_int(0)  # 0 = Use max OpenMP threads
-    
-    # Target all rings by default
+    c_sep = ctypes.c_char(b',')  
+    c_threads = ctypes.c_int(0)  
     c_targets = (ctypes.c_int * 100)(*([1] * 100))
     
-    # Handle Periodic Boundary Conditions
     if cell is None:
         cell = [0.0, 0.0, 0.0]
     c_cell = (ctypes.c_double * 3)(*cell)
     
-    # Create a safe temporary file for the Fortran engine to write to
+    # --- NEW: Handle Active Atoms (Fragment Masking) ---
+    if active_atoms is None:
+        mask = [1] * n_atoms
+    else:
+        mask = [0] * n_atoms
+        for idx in active_atoms:
+            # Python uses 0-based indexing!
+            if 0 <= idx < n_atoms:
+                mask[idx] = 1
+    c_active_mask = (ctypes.c_int * n_atoms)(*mask)
+    # ---------------------------------------------------
+
     fd, temp_path = tempfile.mkstemp(suffix=".tmp")
     os.close(fd)
     c_filename = ctypes.c_char_p(temp_path.encode('utf-8'))
     
-    # 2. Execute the Fortran Engine
+    # 2. Execute the Fortran Engine (Pass c_active_mask!)
     _lib.find_rings(
         ctypes.byref(c_n_atoms), c_x, c_y, c_z, c_radii, 
         ctypes.byref(c_max_ring), c_sep, ctypes.byref(c_threads), 
-        c_targets, c_filename, c_cell
+        c_targets, c_filename, c_cell, c_active_mask
     )
     
     # 3. Parse the results back into a Python dictionary
@@ -110,11 +119,10 @@ def find_rings(x, y, z, elements, max_ring=6, cell=None):
                 "indices": indices
             })
             
-    # Clean up
     os.remove(temp_path)
     return rings
 
-def find_rings_ase(atoms, max_ring=6):
+def find_rings_ase(atoms, max_ring=6, active_atoms=None):
     """
     Convenience wrapper for the Atomic Simulation Environment (ASE).
     Extracts coordinates, elements, and cell dimensions directly from an ASE Atoms object.
@@ -150,7 +158,7 @@ def find_rings_ase(atoms, max_ring=6):
 
     return find_rings(x, y, z, elements, max_ring=max_ring, cell=cell)
 
-def find_rings_rdkit(mol, max_ring=6, conf_id=-1):
+def find_rings_rdkit(mol, max_ring=6, conf_id=-1, active_atoms=None):
     """
     Convenience wrapper for RDKit.
     Extracts 3D coordinates and elements directly from an RDKit Mol object.
@@ -189,4 +197,4 @@ def find_rings_rdkit(mol, max_ring=6, conf_id=-1):
     # like ASE does, so we explicitly disable PBCs by passing a zeroed cell.
     cell = [0.0, 0.0, 0.0]
 
-    return find_rings(x, y, z, elements, max_ring=max_ring, cell=cell)
+    return find_rings(x, y, z, elements, max_ring=max_ring, cell=cell, active_atoms=active_atoms)

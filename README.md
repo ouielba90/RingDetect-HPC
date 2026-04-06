@@ -1,6 +1,6 @@
 # RingDetect-HPC
 
-[![PyPI version](https://badge.fury.io/py/ringdetect-hpc.svg?v=1.1.0)](https://pypi.org/project/ringdetect-hpc/)
+[![PyPI version](https://badge.fury.io/py/ringdetect-hpc.svg?v=1.2.0)](https://pypi.org/project/ringdetect-hpc/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A blisteringly fast command-line utility and Python library for detecting specific molecular rings (cycles) from various structural coordinate files (XYZ, PDB, MOL, CSV) and Python objects (ASE, RDKit).
@@ -11,15 +11,17 @@ Built for computational chemistry pipelines (like EDDB, topological analysis, an
 
   * **Dual Interface:** Run it as a standalone, zero-dependency command-line executable, or `import` it natively into your Python workflows with zero-copy array pointers.
 
+  * **Universal Periodic Table:** Automatically calculates dynamic bond cutoffs based on comprehensive covalent radii for the entire periodic table (Elements 1-96).
+  
+  * **Fragment Masking (Subsetting):** Instantly isolate specific active sites or ligands in massive proteins by passing a binary mask, entirely bypassing the $O(N^2)$ graph math for ignored atoms.
+
   * **Periodic Boundary Conditions (PBC):** Seamlessly handles MOFs, zeolites, and crystal lattices by applying the Minimum Image Convention (MIC) during spatial hashing.
 
   * **Geometric Planarity Checking:** Automatically computes normal vectors on the fly to detect if a cycle is geometrically planar (aromaticity/conformation indicator).
 
-  * **O(N) Spatial Hashing:** Instantly builds adjacency matrices without O(N^2) distance bottlenecks.
+  * **O(N) Spatial Hashing:** Instantly builds adjacency matrices without distance bottlenecks.
 
   * **Zero-Allocation Search:** Uses in-place array mutation during Depth-First Search (DFS) to completely eliminate RAM allocation locks.
-
-  * **Safe & Robust:** Includes automatic buffer overflow protection and robust array size validations for extreme edge-cases.
 
   * **JSON Export:** Output raw paths to standard text files, or strict JSON formats for easy parsing by Pandas and web dashboards.
 
@@ -44,7 +46,7 @@ pip install ringdetect-hpc
 If you want the standalone executable, you can compile from source. **Zero dependencies required** other than standard compilers (`gcc`, `gfortran`, `make`).
 
 ```bash
-git clone https://github.com/ouielba90/RingDetect-HPC.git
+git clone [https://github.com/ouielba90/RingDetect-HPC.git](https://github.com/ouielba90/RingDetect-HPC.git)
 cd RingDetect-HPC
 make
 ```
@@ -57,7 +59,7 @@ make
 
 The Python API uses `ctypes` to pass data directly into Fortran's RAM without writing temporary files.
 
-### 1\. Raw Coordinates
+### 1. Raw Coordinates & Fragment Masking
 
 ```python
 from ringdetect import find_rings
@@ -70,11 +72,16 @@ elements = ["C", "C", "C", "C", "C", "C"]
 # Find up to 6-membered rings
 rings = find_rings(x, y, z, elements, max_ring=6)
 
+# NEW in v1.2.0: Fragment Masking
+# Only search for rings within a specific subset of atoms (0-indexed)
+active_subset = [0, 1, 2, 3, 4, 5]
+masked_rings = find_rings(x, y, z, elements, active_atoms=active_subset)
+
 print(rings)
 # Output: [{'size': 6, 'planar': True, 'indices': [1, 2, 3, 4, 5, 6]}]
 ```
 
-### 2\. Third-Party Integrations (ASE & RDKit)
+### 2. Third-Party Integrations (ASE & RDKit)
 
 If you are already using popular computational chemistry libraries, you can pass those objects directly:
 
@@ -106,6 +113,7 @@ rings = find_rings_rdkit(mol, max_ring=6)
 |------|-------------|---------|---------|
 | `-h`, `--help` | Show the help menu. | | `./ring_detector -h` |
 | `-f` | Set the input coordinate format (`xyz`, `raw`, `csv`, `idx`, `pdb`, `mol`). | `xyz` | `-f pdb` |
+| `-a` | **NEW:** Active atoms mask (comma-separated ranges or single indices) to isolate sub-graphs. | `All` | `-a 1-15,30,45-50` |
 | `-c` | Set unit cell dimensions (`X Y Z`) for Periodic Boundary Conditions. | `0.0 0.0 0.0`| `-c 15.5 15.5 15.5` |
 | `-m` | Maximum ring depth to search (Safely capped at 100). | `6` | `-m 10` |
 | `-r` | Target specific ring sizes (comma-separated). Overrides `-m`. | `All` | `-r 5,6` |
@@ -113,12 +121,16 @@ rings = find_rings_rdkit(mol, max_ring=6)
 | `-s` | Character used to separate atom indices in the output file. | `' '` | `-s -` |
 | `-j` | Output results in strict JSON format instead of standard text. | `OFF` | `-j` |
 
-### Example Run
+### Example Runs
 
-To search a crystal XYZ file for only 5-membered and 6-membered rings, applying a 15.0 Å unit cell, using 8 CPU cores, and outputting to JSON:
-
+Search a crystal XYZ file for only 5-membered and 6-membered rings, applying a 15.0 Å unit cell, using 8 CPU cores, and outputting to JSON:
 ```bash
 ./ring_detector crystal.xyz -c 15.0 15.0 15.0 -r 5,6 -p 8 -j
+```
+
+Analyze only the active site (atoms 100 through 150) of a massive PDB protein to save CPU time:
+```bash
+./ring_detector 1crn.pdb -f pdb -a 100-150
 ```
 
 -----
@@ -154,5 +166,5 @@ Strict JSON payload, perfect for loading directly into Pandas DataFrames or web 
 
 ## 🏗️ Architecture Stack
 
-1.  **`src/main.c` / `ringdetect/engine.py`:** Executes data parsing (skipping PDB headers, extracting ASE geometry, etc.), translates atomic symbols to covalent radii, allocates contiguous memory blocks, and passes zero-copy pointers to Fortran.
+1.  **`src/main.c` / `ringdetect/engine.py`:** Executes data parsing (skipping PDB headers, extracting ASE geometry, etc.), translates atomic symbols to covalent radii, allocates contiguous memory blocks, applies masking logic, and passes zero-copy pointers to Fortran.
 2.  **`src/ring_engine.f90`:** Receives pointers via `iso_c_binding`, builds the OpenMP spatial hash (applying Minimum Image Convention if PBC is active), and launches an optimized, lock-free Depth-First Search with in-flight vector math to isolate and classify the Minimum Cycle Basis. Temp files are streamed dynamically and merged instantly upon completion.

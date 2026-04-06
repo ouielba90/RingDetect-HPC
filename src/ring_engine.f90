@@ -11,13 +11,14 @@ module ring_engine
 
 contains
 
-    subroutine find_rings(n_atoms, x, y, z, r, max_ring, sep, threads, target_rings, c_out_filename, cell) bind(c, name="find_rings")
+    subroutine find_rings(n_atoms, x, y, z, r, max_ring, sep, threads, target_rings, c_out_filename, cell, active_mask) bind(c, name="find_rings")
         integer(c_int), intent(in) :: n_atoms, max_ring, threads
         real(c_double), intent(in) :: x(n_atoms), y(n_atoms), z(n_atoms), r(n_atoms)
         character(c_char), intent(in), value :: sep
         integer(c_int), intent(in) :: target_rings(100) 
         character(kind=c_char), intent(in) :: c_out_filename(*) 
         real(c_double), intent(in) :: cell(3)
+        integer(c_int), intent(in) :: active_mask(n_atoms)
         
         integer :: i, j, tid, num_t, io_status, k
         real(c_double) :: dx, dy, dz, dist_sq, rcut_sq
@@ -54,8 +55,9 @@ contains
         print *, "Fortran Engine: Building Adjacency Graph..."
         !$omp parallel do private(j, dx, dy, dz, dist_sq, rcut_sq) schedule(dynamic)
         do i = 1, n_atoms
+            if (active_mask(i) == 0) cycle
             do j = 1, n_atoms
-                if (i == j) cycle
+                if (i == j .or. active_mask(j) == 0) cycle
                 
                 dx = x(i) - x(j)
                 dy = y(i) - y(j)
@@ -90,6 +92,7 @@ contains
 
         !$omp do schedule(dynamic, 4)
         do i = 1, n_atoms
+            if (active_mask(i) == 0) cycle
             thread_path(1) = i
             call dfs(i, i, 1, thread_path, thread_totals, safe_max_ring, sep, 100+tid, thread_buffer, buf_ptr)
         end do

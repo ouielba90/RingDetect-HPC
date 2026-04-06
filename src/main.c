@@ -15,7 +15,7 @@
 // Fortran Engine Signature
 extern void find_rings(int *n_atoms, double *x, double *y, double *z, double *radii, 
                        int *max_ring, char sep, int *threads, int *target_rings, 
-                       char *out_filename, double *cell);
+                       char *out_filename, double *cell, int *active_mask);
 
 typedef struct {
     const char *symbol;
@@ -105,6 +105,7 @@ int main(int argc, char *argv[]) {
     int use_targets = 0;
     int json_output = 0; 
     double cell[3] = {0.0, 0.0, 0.0}; 
+    char active_str[512] = "";
 
     // Parse Arguments
     for (int i = 2; i < argc; i++) {
@@ -136,6 +137,8 @@ int main(int argc, char *argv[]) {
                 token = strtok(NULL, ",");
             }
             i++;
+        } else if (strcmp(argv[i], "-a") == 0 && i + 1 < argc) {
+            strncpy(active_str, argv[i+1], sizeof(active_str)-1); i++;
         }
     }
 
@@ -237,13 +240,37 @@ int main(int argc, char *argv[]) {
     }
     fclose(file); N = atom_idx; 
 
+// --- Parse Active Mask (-a) ---
+    int *active_mask = (int *)malloc(N * sizeof(int));
+    for (int i = 0; i < N; i++) active_mask[i] = 1; // Default: all active
+
+    if (strlen(active_str) > 0) {
+        for (int i = 0; i < N; i++) active_mask[i] = 0; // Reset to 0
+        char *token = strtok(active_str, ",");
+        while (token != NULL) {
+            char *dash = strchr(token, '-');
+            if (dash != NULL) { // Range like "1-5"
+                *dash = '\0';
+                int start = atoi(token);
+                int end = atoi(dash + 1);
+                for (int idx = start; idx <= end; idx++) {
+                    if (idx >= 1 && idx <= N) active_mask[idx - 1] = 1;
+                }
+            } else { // Single atom like "10"
+                int idx = atoi(token);
+                if (idx >= 1 && idx <= N) active_mask[idx - 1] = 1;
+            }
+            token = strtok(NULL, ",");
+        }
+    }
+
     printf("C Engine Config -> Format: %s | JSON: %s | Max Depth: %d | Sep: '%c' | Threads: %d | Atoms: %d\n", 
            format_str, json_output ? "ON" : "OFF", max_ring, sep, threads, N);
 
     double start_time = omp_get_wtime();
 
-    // Call Fortran to do the heavy lifting
-    find_rings(&N, x, y, z, radii, &max_ring, sep, &threads, target_rings, temp_filename, cell);
+    // Call Fortran (This must be the ONLY find_rings call, and it needs active_mask at the end)
+    find_rings(&N, x, y, z, radii, &max_ring, sep, &threads, target_rings, temp_filename, cell, active_mask);
 
     // JSON Post-Processing
     if (json_output) {
@@ -278,6 +305,6 @@ int main(int argc, char *argv[]) {
     printf("TOTAL EXECUTION TIME: %f seconds\n", end_time - start_time);
     printf("------------------------------------------------\n");
 
-    free(x); free(y); free(z); free(radii);
+    free(x); free(y); free(z); free(radii); free(active_mask);
     return 0;
 }
