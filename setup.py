@@ -19,7 +19,7 @@ class BuildWithMake(build_py):
 
 setup(
     name='ringdetect-hpc',
-    version='1.3.0', 
+    version='1.4.0', 
     packages=find_packages(),
     # Dummy C extension to force platform-specific wheel generation (e.g., manylinux, macosx)
     ext_modules=[Extension("ringdetect._dummy", sources=["dummy.c"])],

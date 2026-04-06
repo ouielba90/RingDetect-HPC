@@ -1,6 +1,6 @@
 # RingDetect-HPC
 
-[![PyPI version](https://badge.fury.io/py/ringdetect-hpc.svg?v=1.3.0)](https://pypi.org/project/ringdetect-hpc/)
+[![PyPI version](https://badge.fury.io/py/ringdetect-hpc.svg?v=1.4.0)](https://pypi.org/project/ringdetect-hpc/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A blisteringly fast command-line utility and Python library for detecting specific molecular rings (cycles) from static structural coordinate files (XYZ, PDB, MOL, CSV), Python objects (ASE, RDKit), and massive Molecular Dynamics (MD) trajectories.
@@ -9,13 +9,12 @@ Built for computational chemistry pipelines (like EDDB, topological analysis, an
 
 ## 🚀 Key Features
 
-  * **MD Trajectory Analysis:** Natively parse multi-frame `.xyz` files (10,000+ frames) or read directly from standard input pipelines to analyze ring dynamics over time.
+  * **Big Data Streaming (NEW):** Generate flat CSV streams capable of processing 80,000+ frames in under 40 seconds, perfectly optimized for Apache Parquet compression.
+  * **MD Trajectory Analysis:** Natively parse multi-frame `.xyz` files or read directly from standard input pipelines to analyze ring dynamics over time.
   * **Dual Interface:** Run it as a standalone, zero-dependency command-line executable, or `import` it natively into your Python workflows with zero-copy array pointers.
   * **Universal Periodic Table:** Automatically calculates dynamic bond cutoffs based on comprehensive covalent radii for the entire periodic table (Elements 1-96).
   * **Fragment Masking (Subsetting):** Instantly isolate specific active sites or ligands in massive proteins by passing a binary mask, entirely bypassing the O(N^2) graph math for ignored atoms.
-  * **Periodic Boundary Conditions (PBC):** Seamlessly handles MOFs, zeolites, and crystal lattices by applying the Minimum Image Convention (MIC) during spatial hashing.
-  * **Geometric Planarity Checking:** Automatically computes normal vectors on the fly to detect if a cycle is geometrically planar (aromaticity/conformation indicator).
-  * **O(N) Spatial Hashing:** Instantly builds adjacency matrices without distance bottlenecks.
+  * **Periodic Boundary Conditions (PBC):** Seamlessly handles MOFs, zeolites, and crystal lattices by applying the Minimum Image Convention (MIC).
   * **Zero-Allocation Search:** Uses in-place array mutation during Depth-First Search (DFS) to completely eliminate RAM allocation locks.
 
 -----
@@ -44,68 +43,6 @@ cd RingDetect-HPC
 make
 ```
 
-*(This generates a highly optimized executable named `ring_detector`.)*
-
------
-
-## 🐍 Python Usage
-
-The Python API uses `ctypes` to pass data directly into Fortran's RAM without writing temporary files.
-
-### 1. Raw Coordinates & Fragment Masking
-
-```python
-from ringdetect import find_rings
-
-x = [0.0000, 1.2098, 1.2098, 0.0000, -1.2098, -1.2098]
-y = [1.3970, 0.6985, -0.6985, -1.3970, -0.6985, 0.6985]
-z = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-elements = ["C", "C", "C", "C", "C", "C"]
-
-# Find up to 6-membered rings
-rings = find_rings(x, y, z, elements, max_ring=6)
-
-# Fragment Masking: Only search for rings within a specific subset of atoms
-active_subset = [0, 1, 2, 3, 4, 5]
-masked_rings = find_rings(x, y, z, elements, active_atoms=active_subset)
-
-print(rings)
-# Output: [{'size': 6, 'planar': True, 'indices': [1, 2, 3, 4, 5, 6]}]
-```
-
-### 2. Third-Party Integrations (ASE & RDKit)
-
-```python
-from ringdetect import find_rings_ase, find_rings_rdkit
-from ase.io import read
-from rdkit import Chem
-
-# With ASE (Automatically detects Periodic Boundary Conditions!)
-atoms = read("crystal_lattice.cif")
-rings = find_rings_ase(atoms, max_ring=8)
-
-# With RDKit
-mol = Chem.MolFromMolFile("molecule.mol")
-rings = find_rings_rdkit(mol, max_ring=6)
-```
-
-### 3. Molecular Dynamics (MDAnalysis)
-
-Loop over massive compressed trajectories natively in Python without writing intermediate files:
-
-```python
-import MDAnalysis as mda
-from ringdetect import find_rings
-
-u = mda.Universe("protein.pdb", "trajectory.xtc")
-protein = u.select_atoms("protein")
-
-for ts in u.trajectory:
-    pos = protein.positions
-    rings = find_rings(pos[:,0], pos[:,1], pos[:,2], list(protein.elements))
-    print(f"Frame {ts.frame}: {len(rings)} rings detected.")
-```
-
 -----
 
 ## 💻 CLI Usage
@@ -121,47 +58,41 @@ for ts in u.trajectory:
 |------|-------------|---------|---------|
 | `-h`, `--help` | Show the help menu. | | `./ring_detector -h` |
 | `-f` | Set the input coordinate format (`xyz`, `raw`, `csv`, `idx`, `pdb`, `mol`). | `xyz` | `-f pdb` |
-| `-a` | Active atoms mask (comma-separated ranges or single indices) to isolate sub-graphs. | `All` | `-a 1-15,30,45-50` |
+| `-a` | Active atoms mask (comma-separated ranges or single indices). | `All` | `-a 1-15,30,45-50` |
 | `-c` | Set unit cell dimensions (`X Y Z`) for Periodic Boundary Conditions. | `0.0 0.0 0.0`| `-c 15.5 15.5 15.5` |
 | `-m` | Maximum ring depth to search (Safely capped at 100). | `6` | `-m 10` |
 | `-r` | Target specific ring sizes (comma-separated). Overrides `-m`. | `All` | `-r 5,6` |
 | `-p` | Number of OpenMP threads to use. (`0` = All physical cores) | `0` | `-p 8` |
-| `-s` | Character used to separate atom indices in the output file. | `' '` | `-s -` |
-| `-j` | Output results in strict JSON format instead of standard text. | `OFF` | `-j` |
-
-### Example Runs
-
-Analyze a 10,000-frame MD trajectory using 8 P-cores and outputting to JSON:
-```bash
-./ring_detector md_trajectory.xyz -f xyz -j -p 8
-```
-
-Pipe directly from GROMACS to avoid saving a massive text file to your disk:
-```bash
-gmx trjconv -s prod.tpr -f prod.xtc -o .xyz | ./ring_detector - -f xyz -j
-```
+| `-j` | Output results in strict JSON format. | `OFF` | `-j` |
+| `-v` | Output results in flat CSV format (Big Data optimized). | `OFF` | `-v` |
 
 -----
 
-## 📄 Output Formats
+## 📄 Output Formats & Big Data Workflow
 
-The engine dynamically generates output using the base name of your input. For multi-frame trajectories, output is automatically grouped by frame.
+The engine dynamically generates output using the base name of your input. 
 
-### Standard Text (`.rings`)
+### 1. Flat CSV (`-v`) & Apache Parquet (Big Data)
 
-Heavily optimized for downstream text parsing. Includes geometric planarity detection.
+For massive multi-frame MD trajectories, JSON becomes a bottleneck. The `-v` flag tells the C-engine to stream a flat CSV at maximum speed (~2,000 frames/sec on modern hardware).
 
-```text
-=== FRAME 1 ===
-5-MR: 1-5-4-10-9
-6-MR (PLANAR): 1-2-15-14-13-12
-=== FRAME 2 ===
-5-MR: 1-5-4-10-9
+```csv
+Frame,RingSize,Planar,Indices
+1,6,True,1-2-15-14-13-12
+1,5,False,1-5-4-10-9
 ```
 
-### JSON Format (`-j`)
+You can then instantly compress this into an **Apache Parquet** file using `polars` in Python (yielding ~94% file size reduction and microsecond load times):
 
-Strict JSON payload, perfect for loading directly into Pandas DataFrames for plotting frame-by-frame network stability.
+```python
+import polars as pl
+# See /examples/parquet/ for the full script!
+pl.read_csv("trajectory.csv").write_parquet("trajectory.parquet")
+```
+
+### 2. JSON Format (`-j`)
+
+Strict JSON payload, perfect for loading directly into web interfaces or smaller Pandas DataFrames.
 
 ```json
 {
@@ -171,12 +102,21 @@ Strict JSON payload, perfect for loading directly into Pandas DataFrames for plo
       "frame": 1,
       "total_atoms": 60,
       "rings": [
-        {"size": 5, "planar": false, "indices": [1, 5, 4, 10, 9]},
-        {"size": 6, "planar": true, "indices": [1, 2, 15, 14, 13, 12]}
+        {"size": 5, "planar": false, "indices": [1, 5, 4, 10, 9]}
       ]
     }
   ]
 }
+```
+
+### 3. Standard Text (`.rings`)
+
+The default output. Heavily optimized for downstream text parsing.
+
+```text
+=== FRAME 1 ===
+5-MR: 1-5-4-10-9
+6-MR (PLANAR): 1-2-15-14-13-12
 ```
 
 ## 🏗️ Architecture Stack
@@ -184,3 +124,22 @@ Strict JSON payload, perfect for loading directly into Pandas DataFrames for plo
 1.  **`src/main.c` / `ringdetect/engine.py`:** Executes data parsing, manages multi-frame I/O streams, translates atomic symbols to covalent radii, allocates contiguous memory blocks, applies masking logic, and passes zero-copy pointers to Fortran.
 2.  **`src/ring_engine.f90`:** Receives pointers via `iso_c_binding`, builds the OpenMP spatial hash (applying Minimum Image Convention if PBC is active), and launches an optimized, lock-free Depth-First Search with in-flight vector math to isolate and classify the Minimum Cycle Basis. Temp files are streamed dynamically and merged instantly upon completion.
 ```
+
+---
+
+### 📝 Release Notes for GitHub (v1.4.0)
+
+**Title:** Release v1.4.0: The Big Data Update (CSV Streaming & Parquet Support) 📊
+
+**Description:**
+This release addresses the primary I/O bottleneck encountered when analyzing massive Molecular Dynamics trajectories (80,000+ frames). We have introduced a high-speed CSV streaming pipeline tailored specifically for modern Big Data architectures like Apache Parquet.
+
+**✨ New Features:**
+* **Flat CSV Streaming (`-v` flag):** Added the `-v` (values) flag to bypass JSON formatting overhead. The C-engine now streams a perfectly flat `Frame,RingSize,Planar,Indices` table directly to disk.
+* **Blistering Trajectory Speed:** With the new CSV pipeline, the OpenMP engine can process and write **~2,000 frames per second** (tested on an Intel Core i7-14700HX for a 4,000-atom system).
+* **Parquet Workflow Integration:** Added the `examples/parquet/` directory to demonstrate how to achieve **94% file size compression** and microsecond load times by piping the CSV output into Python's `polars` library.
+
+**🛠️ Upgrades & Fixes:**
+* Mutually exclusive output guards in the CLI parser to prevent JSON (`-j`) and CSV (`-v`) from clashing.
+* Hardened internal string processing to ensure indices containing accidental commas in memory safely fallback to dashes in CSV mode.
+

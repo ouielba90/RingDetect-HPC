@@ -2,7 +2,7 @@
  * @file main.c
  * @brief HPC Ring Detector CLI & C-API
  * High-performance cycle perception engine parser. Reads common molecular
- * formats and now supports multi-frame MD trajectories (XYZ).
+ * formats and streams multi-frame MD trajectories to Text, JSON, or CSV.
  */
 
 #include <stdio.h>
@@ -75,7 +75,8 @@ void print_help() {
     printf("  -r <list>         Search ONLY for specific ring sizes (comma-separated).\n");
     printf("  -p <threads>      Set OpenMP threads (default: max available).\n");
     printf("  -s <char>         Set output separator character (default: ' ').\n");
-    printf("  -j                Output results in strict JSON format.\n\n");
+    printf("  -j                Output results in strict JSON format.\n");
+    printf("  -v                Output results in flat CSV format (Big Data optimized).\n\n");
     printf("==============================================================\n");
 }
 
@@ -91,11 +92,12 @@ int main(int argc, char *argv[]) {
     char *filename = argv[1];
     char format_str[10] = "xyz"; 
     int max_ring = 6;      
-    char sep = ' ';        
+    char sep = '-'; // Defaulting to '-' to ensure safe CSV parsing       
     int threads = 0;      
     int target_rings[100] = {0}; 
     int use_targets = 0;
     int json_output = 0; 
+    int csv_output = 0;
     double cell[3] = {0.0, 0.0, 0.0}; 
     char active_str[512] = "";
 
@@ -111,6 +113,10 @@ int main(int argc, char *argv[]) {
             threads = atoi(argv[i+1]); i++;
         } else if (strcmp(argv[i], "-j") == 0) {
             json_output = 1; 
+            csv_output = 0; // mutually exclusive
+        } else if (strcmp(argv[i], "-v") == 0) {
+            csv_output = 1;
+            json_output = 0; // mutually exclusive
         } else if (strcmp(argv[i], "-c") == 0 && i + 3 < argc) {
             cell[0] = atof(argv[i+1]); cell[1] = atof(argv[i+2]); cell[2] = atof(argv[i+3]); i += 3;
         } else if (strcmp(argv[i], "-r") == 0 && i + 1 < argc) {
@@ -145,37 +151,47 @@ int main(int argc, char *argv[]) {
     if (json_output) {
         snprintf(out_filename, sizeof(out_filename), "%s.json", base_name);
         snprintf(temp_filename, sizeof(temp_filename), "%s.rings.tmp", base_name);
+    } else if (csv_output) {
+        snprintf(out_filename, sizeof(out_filename), "%s.csv", base_name);
+        snprintf(temp_filename, sizeof(temp_filename), "%s.rings.tmp", base_name);
     } else {
         snprintf(out_filename, sizeof(out_filename), "%s.rings", base_name);
-        snprintf(temp_filename, sizeof(temp_filename), "%s", out_filename); // In text mode, write directly!
+        snprintf(temp_filename, sizeof(temp_filename), "%s", out_filename); // Text writes directly
     }
 
-    FILE *file = fopen(filename, "r");
-    if (!file) { printf("Error: Cannot open file '%s'\n", filename); return 1; }
+    FILE *file;
+    if (strcmp(filename, "-") == 0) {
+        file = stdin;
+    } else {
+        file = fopen(filename, "r");
+        if (!file) { printf("Error: Cannot open file '%s'\n", filename); return 1; }
+    }
     
     FILE *out = fopen(out_filename, "w");
-    if (json_output) fprintf(out, "{\n  \"molecule\": \"%s\",\n  \"frames\": [\n", base_name);
+    if (json_output) {
+        fprintf(out, "{\n  \"molecule\": \"%s\",\n  \"frames\": [\n", base_name);
+    } else if (csv_output) {
+        fprintf(out, "Frame,RingSize,Planar,Indices\n");
+    }
 
     char buffer[512];
     int frame = 0;
     double total_compute_time = 0.0;
 
-    printf("C Engine Config -> Format: %s | JSON: %s | Max Depth: %d | Sep: '%c' | Threads: %d\n", 
-           format_str, json_output ? "ON" : "OFF", max_ring, sep, threads);
+    printf("C Engine Config -> Format: %s | JSON: %s | CSV: %s | Max Depth: %d | Sep: '%c' | Threads: %d\n", 
+           format_str, json_output ? "ON" : "OFF", csv_output ? "ON" : "OFF", max_ring, sep, threads);
     printf("Processing trajectory...\n");
 
     // --- MAIN TRAJECTORY LOOP ---
     while (1) {
         int N = 0;
         
-        // 1. Get N for current frame
         if (strcmp(format_str, "xyz") == 0) {
-            if (!fgets(buffer, sizeof(buffer), file)) break; // EOF reached!
+            if (!fgets(buffer, sizeof(buffer), file)) break; // EOF
             if (sscanf(buffer, "%d", &N) != 1) break; 
             fgets(buffer, sizeof(buffer), file); // skip comment line
         } else {
-            if (frame > 0) break; // Only XYZ supports multi-frame reading naturally right now
-            // PDB, MOL, CSV fallbacks
+            if (frame > 0) break; // Multi-frame only natively handles XYZ
             if (strcmp(format_str, "mol") == 0) {
                 fgets(buffer, sizeof(buffer), file); fgets(buffer, sizeof(buffer), file); fgets(buffer, sizeof(buffer), file); 
                 if (!fgets(buffer, sizeof(buffer), file) || sscanf(buffer, "%d", &N) != 1) break;
@@ -193,6 +209,11 @@ int main(int argc, char *argv[]) {
 
         if (N == 0) break;
         frame++;
+
+        if (frame % 100 == 0) {
+            printf("\r>> Processing Frame: %d...", frame);
+            fflush(stdout);
+        }
 
         // 2. Allocate Arrays
         double *x = (double *)malloc(N * sizeof(double));
@@ -252,23 +273,23 @@ int main(int argc, char *argv[]) {
         // 5. Execute Fortran!
         double start_time = omp_get_wtime();
         
-        if (json_output) {
+        if (json_output || csv_output) {
             find_rings(&N, x, y, z, radii, &max_ring, sep, &threads, target_rings, temp_filename, cell, active_mask);
         } else {
-            // For text, write frame header directly to output file, then let Fortran append to it
             fprintf(out, "=== FRAME %d ===\n", frame);
             fclose(out);
             find_rings(&N, x, y, z, radii, &max_ring, sep, &threads, target_rings, out_filename, cell, active_mask);
-            out = fopen(out_filename, "a"); // Reopen for next loop iteration
+            out = fopen(out_filename, "a");
         }
         
         total_compute_time += (omp_get_wtime() - start_time);
 
-        // 6. JSON Post-Processing for this frame
-        if (json_output) {
+        // 6. JSON / CSV Post-Processing
+        if (json_output || csv_output) {
             FILE *in = fopen(temp_filename, "r");
-            if (frame > 1) fprintf(out, ",\n");
-            fprintf(out, "    {\n      \"frame\": %d,\n      \"total_atoms\": %d,\n      \"rings\": [\n", frame, N);
+            
+            if (json_output && frame > 1) fprintf(out, ",\n");
+            if (json_output) fprintf(out, "    {\n      \"frame\": %d,\n      \"total_atoms\": %d,\n      \"rings\": [\n", frame, N);
             
             char r_line[1024]; int first_item = 1;
             while (fgets(r_line, sizeof(r_line), in)) {
@@ -277,12 +298,20 @@ int main(int argc, char *argv[]) {
                 else if (sscanf(r_line, "%d-MR: %[^\n]", &depth, rest) == 2) is_planar = 0;
                 else continue; 
 
-                for(int i = 0; rest[i]; i++) { if (rest[i] == sep) rest[i] = ','; }
-                if (!first_item) fprintf(out, ",\n");
-                fprintf(out, "        {\"size\": %d, \"planar\": %s, \"indices\": [%s]}", depth, is_planar ? "true" : "false", rest);
+                if (json_output) {
+                    for(int i = 0; rest[i]; i++) { if (rest[i] == sep) rest[i] = ','; }
+                    if (!first_item) fprintf(out, ",\n");
+                    fprintf(out, "        {\"size\": %d, \"planar\": %s, \"indices\": [%s]}", depth, is_planar ? "true" : "false", rest);
+                } else if (csv_output) {
+                    // Replace any accidental commas in 'rest' to avoid breaking CSV format
+                    for(int i = 0; rest[i]; i++) { if (rest[i] == ',') rest[i] = '-'; }
+                    fprintf(out, "%d,%d,%s,%s\n", frame, depth, is_planar ? "True" : "False", rest);
+                }
+                
                 first_item = 0;
             }
-            fprintf(out, "\n      ]\n    }");
+            if (json_output) fprintf(out, "\n      ]\n    }");
+            
             fclose(in);
             remove(temp_filename);
         }
@@ -292,9 +321,9 @@ int main(int argc, char *argv[]) {
 
     if (json_output) fprintf(out, "\n  ]\n}\n");
     fclose(out);
-    fclose(file);
+    if (file != stdin) fclose(file);
 
-    printf("------------------------------------------------\n");
+    printf("\n------------------------------------------------\n");
     printf("Processed %d Frames.\n", frame);
     printf("Output generated: %s\n", out_filename);
     printf("TOTAL COMPUTE TIME: %f seconds\n", total_compute_time);
