@@ -123,23 +123,3 @@ The default output. Heavily optimized for downstream text parsing.
 
 1.  **`src/main.c` / `ringdetect/engine.py`:** Executes data parsing, manages multi-frame I/O streams, translates atomic symbols to covalent radii, allocates contiguous memory blocks, applies masking logic, and passes zero-copy pointers to Fortran.
 2.  **`src/ring_engine.f90`:** Receives pointers via `iso_c_binding`, builds the OpenMP spatial hash (applying Minimum Image Convention if PBC is active), and launches an optimized, lock-free Depth-First Search with in-flight vector math to isolate and classify the Minimum Cycle Basis. Temp files are streamed dynamically and merged instantly upon completion.
-```
-
----
-
-### 📝 Release Notes for GitHub (v1.4.0)
-
-**Title:** Release v1.4.0: The Big Data Update (CSV Streaming & Parquet Support) 📊
-
-**Description:**
-This release addresses the primary I/O bottleneck encountered when analyzing massive Molecular Dynamics trajectories (80,000+ frames). We have introduced a high-speed CSV streaming pipeline tailored specifically for modern Big Data architectures like Apache Parquet.
-
-**✨ New Features:**
-* **Flat CSV Streaming (`-v` flag):** Added the `-v` (values) flag to bypass JSON formatting overhead. The C-engine now streams a perfectly flat `Frame,RingSize,Planar,Indices` table directly to disk.
-* **Blistering Trajectory Speed:** With the new CSV pipeline, the OpenMP engine can process and write **~2,000 frames per second** (tested on an Intel Core i7-14700HX for a 4,000-atom system).
-* **Parquet Workflow Integration:** Added the `examples/parquet/` directory to demonstrate how to achieve **94% file size compression** and microsecond load times by piping the CSV output into Python's `polars` library.
-
-**🛠️ Upgrades & Fixes:**
-* Mutually exclusive output guards in the CLI parser to prevent JSON (`-j`) and CSV (`-v`) from clashing.
-* Hardened internal string processing to ensure indices containing accidental commas in memory safely fallback to dashes in CSV mode.
-
