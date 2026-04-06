@@ -1,9 +1,8 @@
 /**
  * @file main.c
  * @brief HPC Ring Detector CLI & C-API
- * * High-performance cycle perception engine parser. Reads common molecular
- * formats (XYZ, CSV, PDB, MOL) and passes native arrays to the Fortran 
- * physics engine for parallel graph traversal.
+ * High-performance cycle perception engine parser. Reads common molecular
+ * formats and now supports multi-frame MD trajectories (XYZ).
  */
 
 #include <stdio.h>
@@ -52,19 +51,14 @@ double get_covalent_radius(const char *element) {
     };
     int num_elements = sizeof(pt) / sizeof(pt[0]);
 
-    // Format input to standard Title Case (e.g., "pd" -> "Pd")
     char clean_elem[3] = {0};
     if (element[0]) clean_elem[0] = toupper((unsigned char)element[0]);
     if (element[1]) clean_elem[1] = tolower((unsigned char)element[1]);
 
-    // Fast linear search
     for (int i = 0; i < num_elements; i++) {
-        if (strcmp(clean_elem, pt[i].symbol) == 0) {
-            return pt[i].radius;
-        }
+        if (strcmp(clean_elem, pt[i].symbol) == 0) return pt[i].radius;
     }
-
-    return 1.00; // Fallback for missing/exotic elements
+    return 1.00; 
 }
 
 void print_help() {
@@ -75,15 +69,13 @@ void print_help() {
     printf("Options:\n");
     printf("  -h, --help        Show this help message and exit.\n");
     printf("  -f <format>       Set the input file format (default: xyz).\n");
-    printf("                      xyz, raw, csv, idx, pdb, mol\n");
+    printf("  -a <mask_list>    Active atoms mask (e.g., 1-15,30).\n");
     printf("  -c <x> <y> <z>    Set unit cell dimensions for Periodic Boundaries.\n");
     printf("  -m <number>       Set maximum ring depth to search (default: 6).\n");
     printf("  -r <list>         Search ONLY for specific ring sizes (comma-separated).\n");
     printf("  -p <threads>      Set OpenMP threads (default: max available).\n");
     printf("  -s <char>         Set output separator character (default: ' ').\n");
     printf("  -j                Output results in strict JSON format.\n\n");
-    printf("Example:\n");
-    printf("  ./ring_detector crystal.xyz -c 15.0 15.0 15.0 -j -p 8\n");
     printf("==============================================================\n");
 }
 
@@ -120,20 +112,16 @@ int main(int argc, char *argv[]) {
         } else if (strcmp(argv[i], "-j") == 0) {
             json_output = 1; 
         } else if (strcmp(argv[i], "-c") == 0 && i + 3 < argc) {
-            cell[0] = atof(argv[i+1]); cell[1] = atof(argv[i+2]); cell[2] = atof(argv[i+3]);
-            i += 3;
+            cell[0] = atof(argv[i+1]); cell[1] = atof(argv[i+2]); cell[2] = atof(argv[i+3]); i += 3;
         } else if (strcmp(argv[i], "-r") == 0 && i + 1 < argc) {
             use_targets = 1;
             char rings_str[256];
             strncpy(rings_str, argv[i+1], sizeof(rings_str)-1);
             char *token = strtok(rings_str, ",");
             max_ring = 0; 
-	    while (token != NULL) {
+            while (token != NULL) {
                 int r = atoi(token);
-                if (r >= 3 && r <= 100) {
-                    target_rings[r - 1] = 1; 
-                    if (r > max_ring) max_ring = r; 
-                }
+                if (r >= 3 && r <= 100) { target_rings[r - 1] = 1; if (r > max_ring) max_ring = r; }
                 token = strtok(NULL, ",");
             }
             i++;
@@ -142,169 +130,175 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Prevent buffer overflow if user passes -m > 100
-    if (max_ring > 100) {
-        max_ring = 100;
-    }
-    // --------------------------------
+    if (max_ring > 100) max_ring = 100;
+    if (!use_targets) { for (int i = 3; i <= max_ring; i++) target_rings[i - 1] = 1; }
 
-    if (!use_targets) {
-        for (int i = 3; i <= max_ring; i++) target_rings[i - 1] = 1;
-    }
-
-    // Filename generation
+    // Filenames
     char base_name[256], out_filename[256], temp_filename[256];
-    char *slash = strrchr(filename, '/');
-    char *backslash = strrchr(filename, '\\');
+    char *slash = strrchr(filename, '/'); char *backslash = strrchr(filename, '\\');
     char *file_start = filename;
     if (slash != NULL) file_start = slash + 1;
     if (backslash != NULL && backslash > slash) file_start = backslash + 1;
-    
     strncpy(base_name, file_start, sizeof(base_name) - 1);
-    char *dot = strrchr(base_name, '.');
-    if (dot != NULL) *dot = '\0';
+    char *dot = strrchr(base_name, '.'); if (dot != NULL) *dot = '\0';
     
     if (json_output) {
         snprintf(out_filename, sizeof(out_filename), "%s.json", base_name);
         snprintf(temp_filename, sizeof(temp_filename), "%s.rings.tmp", base_name);
     } else {
         snprintf(out_filename, sizeof(out_filename), "%s.rings", base_name);
-        snprintf(temp_filename, sizeof(temp_filename), "%s", out_filename);
+        snprintf(temp_filename, sizeof(temp_filename), "%s", out_filename); // In text mode, write directly!
     }
 
-    // --- File Parsing (Logic Unchanged) ---
     FILE *file = fopen(filename, "r");
     if (!file) { printf("Error: Cannot open file '%s'\n", filename); return 1; }
+    
+    FILE *out = fopen(out_filename, "w");
+    if (json_output) fprintf(out, "{\n  \"molecule\": \"%s\",\n  \"frames\": [\n", base_name);
 
-    int N = 0;
     char buffer[512];
-    if (strcmp(format_str, "xyz") == 0) {
-        if (!fgets(buffer, sizeof(buffer), file) || sscanf(buffer, "%d", &N) != 1) {
-            printf("Error: Cannot read atoms.\n"); fclose(file); return 1;
-        }
-        fgets(buffer, sizeof(buffer), file); 
-    } else if (strcmp(format_str, "mol") == 0) {
-        fgets(buffer, sizeof(buffer), file); fgets(buffer, sizeof(buffer), file); fgets(buffer, sizeof(buffer), file); 
-        if (!fgets(buffer, sizeof(buffer), file) || sscanf(buffer, "%d", &N) != 1) {
-            printf("Error: Cannot read MOL header.\n"); fclose(file); return 1;
-        }
-        rewind(file); 
-    } else if (strcmp(format_str, "pdb") == 0) {
-        while (fgets(buffer, sizeof(buffer), file)) {
-            if (strncmp(buffer, "ATOM  ", 6) == 0 || strncmp(buffer, "HETATM", 6) == 0) N++;
-        }
-        rewind(file);
-    } else {
-        while (fgets(buffer, sizeof(buffer), file)) { if (strlen(buffer) > 2) N++; }
-        rewind(file); 
-    }
+    int frame = 0;
+    double total_compute_time = 0.0;
 
-    double *x = (double *)malloc(N * sizeof(double));
-    double *y = (double *)malloc(N * sizeof(double));
-    double *z = (double *)malloc(N * sizeof(double));
-    double *radii = (double *)malloc(N * sizeof(double));
+    printf("C Engine Config -> Format: %s | JSON: %s | Max Depth: %d | Sep: '%c' | Threads: %d\n", 
+           format_str, json_output ? "ON" : "OFF", max_ring, sep, threads);
+    printf("Processing trajectory...\n");
 
-    int atom_idx = 0; char element[20];
-    if (strcmp(format_str, "mol") == 0) {
-        for(int k=0; k<4; k++) fgets(buffer, sizeof(buffer), file);
-    }
-
-    while (atom_idx < N && fgets(buffer, sizeof(buffer), file)) {
-        int len = strlen(buffer);
-        if (len < 3) continue; 
-        int success = 0;
-
-        if (strcmp(format_str, "xyz") == 0 || strcmp(format_str, "raw") == 0) {
-            success = (sscanf(buffer, "%19s %lf %lf %lf", element, &x[atom_idx], &y[atom_idx], &z[atom_idx]) == 4);
-        } else if (strcmp(format_str, "csv") == 0) {
-            success = (sscanf(buffer, " %19[^, \t] , %lf , %lf , %lf", element, &x[atom_idx], &y[atom_idx], &z[atom_idx]) == 4);
-        } else if (strcmp(format_str, "idx") == 0) {
-            int dummy_id; success = (sscanf(buffer, "%d %19s %lf %lf %lf", &dummy_id, element, &x[atom_idx], &y[atom_idx], &z[atom_idx]) == 5);
-        } else if (strcmp(format_str, "mol") == 0) {
-            success = (sscanf(buffer, "%lf %lf %lf %19s", &x[atom_idx], &y[atom_idx], &z[atom_idx], element) == 4);
-        } else if (strcmp(format_str, "pdb") == 0) {
-            if (strncmp(buffer, "ATOM  ", 6) == 0 || strncmp(buffer, "HETATM", 6) == 0) {
-                if (len >= 54) { 
-                    char x_str[9] = {0}, y_str[9] = {0}, z_str[9] = {0}, elem_str[3] = {0};
-                    strncpy(x_str, buffer + 30, 8); strncpy(y_str, buffer + 38, 8); strncpy(z_str, buffer + 46, 8);
-                    if (len >= 78) strncpy(elem_str, buffer + 76, 2);
-                    if (elem_str[0] == ' ' || elem_str[0] == '\0') strncpy(elem_str, buffer + 12, 2); 
-                    int k = 0;
-                    for (int j = 0; j < 2; j++) { if (isalpha((unsigned char)elem_str[j])) element[k++] = elem_str[j]; }
-                    element[k] = '\0';
-                    x[atom_idx] = atof(x_str); y[atom_idx] = atof(y_str); z[atom_idx] = atof(z_str); success = 1;
+    // --- MAIN TRAJECTORY LOOP ---
+    while (1) {
+        int N = 0;
+        
+        // 1. Get N for current frame
+        if (strcmp(format_str, "xyz") == 0) {
+            if (!fgets(buffer, sizeof(buffer), file)) break; // EOF reached!
+            if (sscanf(buffer, "%d", &N) != 1) break; 
+            fgets(buffer, sizeof(buffer), file); // skip comment line
+        } else {
+            if (frame > 0) break; // Only XYZ supports multi-frame reading naturally right now
+            // PDB, MOL, CSV fallbacks
+            if (strcmp(format_str, "mol") == 0) {
+                fgets(buffer, sizeof(buffer), file); fgets(buffer, sizeof(buffer), file); fgets(buffer, sizeof(buffer), file); 
+                if (!fgets(buffer, sizeof(buffer), file) || sscanf(buffer, "%d", &N) != 1) break;
+                rewind(file); 
+            } else if (strcmp(format_str, "pdb") == 0) {
+                while (fgets(buffer, sizeof(buffer), file)) {
+                    if (strncmp(buffer, "ATOM  ", 6) == 0 || strncmp(buffer, "HETATM", 6) == 0) N++;
                 }
+                rewind(file);
+            } else {
+                while (fgets(buffer, sizeof(buffer), file)) { if (strlen(buffer) > 2) N++; }
+                rewind(file); 
             }
         }
-        if (success) { radii[atom_idx] = get_covalent_radius(element); atom_idx++; }
-    }
-    fclose(file); N = atom_idx; 
 
-// --- Parse Active Mask (-a) ---
-    int *active_mask = (int *)malloc(N * sizeof(int));
-    for (int i = 0; i < N; i++) active_mask[i] = 1; // Default: all active
+        if (N == 0) break;
+        frame++;
 
-    if (strlen(active_str) > 0) {
-        for (int i = 0; i < N; i++) active_mask[i] = 0; // Reset to 0
-        char *token = strtok(active_str, ",");
-        while (token != NULL) {
-            char *dash = strchr(token, '-');
-            if (dash != NULL) { // Range like "1-5"
-                *dash = '\0';
-                int start = atoi(token);
-                int end = atoi(dash + 1);
-                for (int idx = start; idx <= end; idx++) {
+        // 2. Allocate Arrays
+        double *x = (double *)malloc(N * sizeof(double));
+        double *y = (double *)malloc(N * sizeof(double));
+        double *z = (double *)malloc(N * sizeof(double));
+        double *radii = (double *)malloc(N * sizeof(double));
+        int *active_mask = (int *)malloc(N * sizeof(int));
+        
+        int atom_idx = 0; char element[20];
+        if (strcmp(format_str, "mol") == 0) { for(int k=0; k<4; k++) fgets(buffer, sizeof(buffer), file); }
+
+        // 3. Read Coordinates
+        while (atom_idx < N && fgets(buffer, sizeof(buffer), file)) {
+            int len = strlen(buffer); if (len < 3) continue; 
+            int success = 0;
+            if (strcmp(format_str, "xyz") == 0 || strcmp(format_str, "raw") == 0) {
+                success = (sscanf(buffer, "%19s %lf %lf %lf", element, &x[atom_idx], &y[atom_idx], &z[atom_idx]) == 4);
+            } else if (strcmp(format_str, "csv") == 0) {
+                success = (sscanf(buffer, " %19[^, \t] , %lf , %lf , %lf", element, &x[atom_idx], &y[atom_idx], &z[atom_idx]) == 4);
+            } else if (strcmp(format_str, "pdb") == 0) {
+                if (strncmp(buffer, "ATOM  ", 6) == 0 || strncmp(buffer, "HETATM", 6) == 0) {
+                    if (len >= 54) { 
+                        char x_str[9] = {0}, y_str[9] = {0}, z_str[9] = {0}, elem_str[3] = {0};
+                        strncpy(x_str, buffer + 30, 8); strncpy(y_str, buffer + 38, 8); strncpy(z_str, buffer + 46, 8);
+                        if (len >= 78) strncpy(elem_str, buffer + 76, 2);
+                        if (elem_str[0] == ' ' || elem_str[0] == '\0') strncpy(elem_str, buffer + 12, 2); 
+                        int k = 0; for (int j = 0; j < 2; j++) { if (isalpha((unsigned char)elem_str[j])) element[k++] = elem_str[j]; }
+                        element[k] = '\0';
+                        x[atom_idx] = atof(x_str); y[atom_idx] = atof(y_str); z[atom_idx] = atof(z_str); success = 1;
+                    }
+                }
+            }
+            if (success) { radii[atom_idx] = get_covalent_radius(element); atom_idx++; }
+        }
+
+        // 4. Parse Mask
+        for (int i = 0; i < N; i++) active_mask[i] = 1; 
+        if (strlen(active_str) > 0) {
+            for (int i = 0; i < N; i++) active_mask[i] = 0;
+            char *str_copy = strdup(active_str);
+            char *token = strtok(str_copy, ",");
+            while (token != NULL) {
+                char *dash = strchr(token, '-');
+                if (dash != NULL) {
+                    *dash = '\0';
+                    int start = atoi(token); int end = atoi(dash + 1);
+                    for (int idx = start; idx <= end; idx++) { if (idx >= 1 && idx <= N) active_mask[idx - 1] = 1; }
+                } else {
+                    int idx = atoi(token);
                     if (idx >= 1 && idx <= N) active_mask[idx - 1] = 1;
                 }
-            } else { // Single atom like "10"
-                int idx = atoi(token);
-                if (idx >= 1 && idx <= N) active_mask[idx - 1] = 1;
+                token = strtok(NULL, ",");
             }
-            token = strtok(NULL, ",");
+            free(str_copy);
         }
+
+        // 5. Execute Fortran!
+        double start_time = omp_get_wtime();
+        
+        if (json_output) {
+            find_rings(&N, x, y, z, radii, &max_ring, sep, &threads, target_rings, temp_filename, cell, active_mask);
+        } else {
+            // For text, write frame header directly to output file, then let Fortran append to it
+            fprintf(out, "=== FRAME %d ===\n", frame);
+            fclose(out);
+            find_rings(&N, x, y, z, radii, &max_ring, sep, &threads, target_rings, out_filename, cell, active_mask);
+            out = fopen(out_filename, "a"); // Reopen for next loop iteration
+        }
+        
+        total_compute_time += (omp_get_wtime() - start_time);
+
+        // 6. JSON Post-Processing for this frame
+        if (json_output) {
+            FILE *in = fopen(temp_filename, "r");
+            if (frame > 1) fprintf(out, ",\n");
+            fprintf(out, "    {\n      \"frame\": %d,\n      \"total_atoms\": %d,\n      \"rings\": [\n", frame, N);
+            
+            char r_line[1024]; int first_item = 1;
+            while (fgets(r_line, sizeof(r_line), in)) {
+                int depth; char rest[512]; int is_planar = 0;
+                if (sscanf(r_line, "%d-MR (PLANAR): %[^\n]", &depth, rest) == 2) is_planar = 1;
+                else if (sscanf(r_line, "%d-MR: %[^\n]", &depth, rest) == 2) is_planar = 0;
+                else continue; 
+
+                for(int i = 0; rest[i]; i++) { if (rest[i] == sep) rest[i] = ','; }
+                if (!first_item) fprintf(out, ",\n");
+                fprintf(out, "        {\"size\": %d, \"planar\": %s, \"indices\": [%s]}", depth, is_planar ? "true" : "false", rest);
+                first_item = 0;
+            }
+            fprintf(out, "\n      ]\n    }");
+            fclose(in);
+            remove(temp_filename);
+        }
+
+        free(x); free(y); free(z); free(radii); free(active_mask);
     }
 
-    printf("C Engine Config -> Format: %s | JSON: %s | Max Depth: %d | Sep: '%c' | Threads: %d | Atoms: %d\n", 
-           format_str, json_output ? "ON" : "OFF", max_ring, sep, threads, N);
+    if (json_output) fprintf(out, "\n  ]\n}\n");
+    fclose(out);
+    fclose(file);
 
-    double start_time = omp_get_wtime();
-
-    // Call Fortran (This must be the ONLY find_rings call, and it needs active_mask at the end)
-    find_rings(&N, x, y, z, radii, &max_ring, sep, &threads, target_rings, temp_filename, cell, active_mask);
-
-    // JSON Post-Processing
-    if (json_output) {
-        FILE *in = fopen(temp_filename, "r");
-        FILE *out = fopen(out_filename, "w");
-        
-        fprintf(out, "{\n  \"molecule\": \"%s\",\n  \"total_atoms\": %d,\n  \"rings\": [\n", base_name, N);
-        
-        char line[1024];
-        int first_item = 1;
-        while (fgets(line, sizeof(line), in)) {
-            int depth; char rest[512]; int is_planar = 0;
-            
-            if (sscanf(line, "%d-MR (PLANAR): %[^\n]", &depth, rest) == 2) is_planar = 1;
-            else if (sscanf(line, "%d-MR: %[^\n]", &depth, rest) == 2) is_planar = 0;
-            else continue; 
-
-            for(int i = 0; rest[i]; i++) { if (rest[i] == sep) rest[i] = ','; }
-            
-            if (!first_item) fprintf(out, ",\n");
-            fprintf(out, "    {\"size\": %d, \"planar\": %s, \"indices\": [%s]}", depth, is_planar ? "true" : "false", rest);
-            first_item = 0;
-        }
-        fprintf(out, "\n  ]\n}\n");
-        fclose(in); fclose(out);
-        remove(temp_filename);
-    }
-
-    double end_time = omp_get_wtime();
     printf("------------------------------------------------\n");
+    printf("Processed %d Frames.\n", frame);
     printf("Output generated: %s\n", out_filename);
-    printf("TOTAL EXECUTION TIME: %f seconds\n", end_time - start_time);
+    printf("TOTAL COMPUTE TIME: %f seconds\n", total_compute_time);
     printf("------------------------------------------------\n");
 
-    free(x); free(y); free(z); free(radii); free(active_mask);
     return 0;
 }
